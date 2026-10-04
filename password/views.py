@@ -1,7 +1,8 @@
 import hashlib
 
+from django.conf import settings
 from django.db import IntegrityError
-from rest_framework import generics, settings, status
+from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
@@ -323,9 +324,6 @@ class BackupExportView(APIView):
 
 
 class BackupImportView(APIView):
-    """DB রিসেট হয়ে গেলে কোনো account ই থাকবে না, তাই normal token auth দিয়ে এটা protect করা যায় না —
-    তার বদলে একটা আলাদা static secret দিয়ে protect করা হচ্ছে।"""
-
     def post(self, request):
         secret = request.headers.get("X-Backup-Secret", "")
         if not settings.BACKUP_SECRET or secret != settings.BACKUP_SECRET:
