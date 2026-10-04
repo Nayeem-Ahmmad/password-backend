@@ -1,7 +1,7 @@
 import hashlib
 
 from django.db import IntegrityError
-from rest_framework import generics, status
+from rest_framework import generics, settings, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
@@ -10,6 +10,7 @@ from rest_framework.views import APIView
 from . import crypto
 from .authentication import VaultTokenAuthentication
 from .models import Account, VaultEntry, normalize_name
+from .backup import export_account, restore_account
 from .serializers import (
     RegisterSerializer,
     LoginSerializer,
@@ -19,6 +20,7 @@ from .serializers import (
     VaultEntrySerializer,
     EncodeRequestSerializer,
     DecodeRequestSerializer,
+    UpdateEntrySerializer,
     validate_secrets,
 )
 
@@ -269,10 +271,69 @@ class DecodePasswordView(APIView):
         return Response({'password': original})
 
 
-class DeleteEntryView(generics.DestroyAPIView):
+class EntryDetailView(APIView):
     authentication_classes = [VaultTokenAuthentication]
     permission_classes = [IsAuthenticated]
-    serializer_class = VaultEntrySerializer
 
-    def get_queryset(self):
-        return VaultEntry.objects.filter(account=self.request.user)
+    def get_object(self, request, pk):
+        return VaultEntry.objects.filter(account=request.user, pk=pk).first()
+
+    def patch(self, request, pk):
+        entry = self.get_object(request, pk)
+        if not entry:
+            return bad('Entry not found.', status.HTTP_404_NOT_FOUND)
+
+        serializer = UpdateEntrySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        account = request.user
+
+        if 'name' in data:
+            entry.name = data['name'].strip()
+
+        if 'password' in data:
+            if account.is_locked('login'):
+                return locked(account, 'login')
+            try:
+                crypto.unwrap_data_key(account.master_wrapped, data['master_key'], account.master_salt)
+            except ValueError:
+                account.register_failure('login')
+                if account.is_locked('login'):
+                    return locked(account, 'login')
+                return bad('Incorrect Master Key.')
+            account.clear_failures('login')
+            entry.encoded_password = crypto.encrypt_password(data['password'], request.auth)
+
+        entry.save()
+        return Response(VaultEntrySerializer(entry).data)
+
+    def delete(self, request, pk):
+        entry = self.get_object(request, pk)
+        if not entry:
+            return bad('Entry not found.', status.HTTP_404_NOT_FOUND)
+        entry.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+class BackupExportView(APIView):
+    authentication_classes = [VaultTokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(export_account(request.user))
+
+
+class BackupImportView(APIView):
+    """DB রিসেট হয়ে গেলে কোনো account ই থাকবে না, তাই normal token auth দিয়ে এটা protect করা যায় না —
+    তার বদলে একটা আলাদা static secret দিয়ে protect করা হচ্ছে।"""
+
+    def post(self, request):
+        secret = request.headers.get("X-Backup-Secret", "")
+        if not settings.BACKUP_SECRET or secret != settings.BACKUP_SECRET:
+            return Response({"detail": "Invalid backup secret."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            restore_account(request.data)
+        except (KeyError, TypeError):
+            return Response({"detail": "Invalid backup file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"success": True})

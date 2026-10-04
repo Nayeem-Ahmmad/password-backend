@@ -63,3 +63,18 @@ class EncodeRequestSerializer(serializers.Serializer):
 class DecodeRequestSerializer(serializers.Serializer):
     encoded_password = serializers.CharField()
     master_key = serializers.CharField(write_only=True)
+
+
+class UpdateEntrySerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=255, required=False)
+    password = serializers.CharField(write_only=True, required=False)
+    master_key = serializers.CharField(write_only=True, required=False)
+
+    def validate(self, attrs):
+        if 'name' not in attrs and 'password' not in attrs:
+            raise serializers.ValidationError('Nothing to update.')
+        if 'password' in attrs and not attrs.get('master_key'):
+            raise serializers.ValidationError(
+                {'master_key': ['Master key is required to change the password.']}
+            )
+        return attrs
