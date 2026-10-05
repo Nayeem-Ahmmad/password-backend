@@ -1,10 +1,9 @@
-
 from datetime import timedelta
 from django.utils import timezone
 
 import hashlib
 from django.conf import settings
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -13,7 +12,7 @@ from rest_framework.views import APIView
 
 from . import crypto
 from .authentication import VaultTokenAuthentication
-from .models import Account, VaultEntry, normalize_name
+from .models import Account, EncodeEvent, VaultEntry, normalize_name
 from .backup import export_account, restore_account
 from .serializers import (
     RegisterSerializer,
@@ -230,6 +229,32 @@ class VaultEntryListView(generics.ListAPIView):
 
 
 DAILY_ENTRY_LIMIT = 20
+DAILY_WINDOW = timedelta(hours=24)
+
+
+def usage_for(account):
+    window_start = timezone.now() - DAILY_WINDOW
+    times = list(
+        EncodeEvent.objects.filter(account=account, created_at__gte=window_start)
+        .order_by('created_at')
+        .values_list('created_at', flat=True)
+    )
+    used = len(times)
+    next_free = times[0] + DAILY_WINDOW if times else None
+    return {
+        'limit': DAILY_ENTRY_LIMIT,
+        'used': used,
+        'remaining': max(0, DAILY_ENTRY_LIMIT - used),
+        'resets_at': next_free.isoformat() if next_free else None,
+    }
+
+
+class UsageView(APIView):
+    authentication_classes = [VaultTokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(usage_for(request.user))
 
 
 class EncodePasswordView(APIView):
@@ -237,30 +262,34 @@ class EncodePasswordView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        account = request.user
-
-        window_start = timezone.now() - timedelta(hours=24)
-        recent_count = VaultEntry.objects.filter(
-            account=account, created_at__gte=window_start
-        ).count()
-
-        if recent_count >= DAILY_ENTRY_LIMIT:
-            return Response(
-                {
-                    "detail": f"Daily limit reached. You can save up to {DAILY_ENTRY_LIMIT} passwords per 24 hours — try again later."
-                },
-                status=status.HTTP_429_TOO_MANY_REQUESTS,
-            )
-
         serializer = EncodeRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        encoded = crypto.encrypt_password(serializer.validated_data['password'], request.auth)
-        entry = VaultEntry.objects.create(
-            account=request.user,
-            name=serializer.validated_data['name'],
-            encoded_password=encoded,
-        )
+        with transaction.atomic():
+            account = Account.objects.select_for_update().get(pk=request.user.pk)
+            usage = usage_for(account)
+
+            if usage['remaining'] <= 0:
+                return Response(
+                    {
+                        'detail': f'Daily limit reached. You can save up to {DAILY_ENTRY_LIMIT} passwords per 24 hours.',
+                        'usage': usage,
+                    },
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
+
+            encoded = crypto.encrypt_password(serializer.validated_data['password'], request.auth)
+            entry = VaultEntry.objects.create(
+                account=account,
+                name=serializer.validated_data['name'],
+                encoded_password=encoded,
+            )
+            EncodeEvent.objects.create(account=account)
+            EncodeEvent.objects.filter(
+                account=account,
+                created_at__lt=timezone.now() - 2 * DAILY_WINDOW,
+            ).delete()
+
         return Response(VaultEntrySerializer(entry).data, status=status.HTTP_201_CREATED)
 
 

@@ -74,3 +74,11 @@ class VaultEntry(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class EncodeEvent(models.Model):
+    account = models.ForeignKey(Account, on_delete=models.CASCADE, related_name='encode_events')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['created_at']

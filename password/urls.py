@@ -11,7 +11,8 @@ from .views import (
     DecodePasswordView,
     EntryDetailView,
     BackupExportView,
-    BackupImportView
+    BackupImportView,
+    UsageView,
 )
 
 urlpatterns = [
@@ -23,6 +24,7 @@ urlpatterns = [
     path('reset-key/', ResetKeyView.as_view(), name='reset-key'),
     path('entries/', VaultEntryListView.as_view(), name='entry-list'),
     path('encode/', EncodePasswordView.as_view(), name='encode'),
+    path('usage/', UsageView.as_view(), name='usage'),
     path('decode/', DecodePasswordView.as_view(), name='decode'),
     path('entries/<int:pk>/', EntryDetailView.as_view(), name='entry-detail'),
     path('backup/export/', BackupExportView.as_view(), name='backup-export'),
