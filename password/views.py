@@ -1,5 +1,8 @@
-import hashlib
 
+from datetime import timedelta
+from django.utils import timezone
+
+import hashlib
 from django.conf import settings
 from django.db import IntegrityError
 from rest_framework import generics, status
@@ -226,11 +229,29 @@ class VaultEntryListView(generics.ListAPIView):
         return VaultEntry.objects.filter(account=self.request.user)
 
 
+DAILY_ENTRY_LIMIT = 20
+
+
 class EncodePasswordView(APIView):
     authentication_classes = [VaultTokenAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        account = request.user
+
+        window_start = timezone.now() - timedelta(hours=24)
+        recent_count = VaultEntry.objects.filter(
+            account=account, created_at__gte=window_start
+        ).count()
+
+        if recent_count >= DAILY_ENTRY_LIMIT:
+            return Response(
+                {
+                    "detail": f"Daily limit reached. You can save up to {DAILY_ENTRY_LIMIT} passwords per 24 hours — try again later."
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
         serializer = EncodeRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
